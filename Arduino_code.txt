@@ -1,0 +1,212 @@
+#include <Servo.h>
+
+// LDR Pins
+const int ldrPins[] = {A0, A1, A2, A3, A4}; // 5 LDR pins
+
+// Servo Control
+Servo elevationServo;
+const int servoPin = 6;
+const int elevationAngles[] = {0, 45, 60, 90}; // Supported elevation angles
+
+// Motor Control (L298N)
+const int enA = 5;   // Enable pin (PWM)
+const int in1 = 8;
+const int in2 = 7;
+const int in3 = 10;
+const int in4 = 11;
+
+// Calibration Parameters
+const int numAzimuthPositions = 5;  // 360/72 = 5 positions
+const int x = 1250;                 // Rotation delay parameter (adjust experimentally)
+int minElevations[numAzimuthPositions]; // Stores best elevation for each azimuth
+int minIntensities[numAzimuthPositions]; // Stores min intensity for each azimuth
+int currentAzimuth = 0;
+int bestOverallAzimuth = 0;
+int bestOverallElevation = 0;
+int globalMinIntensity = 1023; // Start with maximum possible value
+bool isCalibrated = false;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Initialize LDR pins
+  for(int i=0; i<5; i++) pinMode(ldrPins[i], INPUT);
+  
+  // Setup servo
+  elevationServo.attach(servoPin);
+  
+  // Setup motor control pins
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+  
+  // Start with motors stopped
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+  
+  // Set enable pin high (full speed)
+  analogWrite(enA, 255);
+}
+
+void loop() {
+  if(!isCalibrated) {
+    performCalibration();
+    isCalibrated = true;
+    Serial.println("Calibration Complete!");
+    printCalibrationData();
+    moveToOptimalPosition();
+  } else {
+    // Operational tracking would go here
+    delay(1000); // Just wait in this example
+  }
+}
+
+void performCalibration() {
+  globalMinIntensity = 1023; // Reset to maximum possible value
+  
+  for(int az = 0; az < numAzimuthPositions; az++) {
+    int currentMinIntensity = 1023; // Start with maximum possible value
+    int currentBestElevation = 0;
+    
+    // Test all elevation angles
+    for(int el = 0; el < 4; el++) {
+      elevationServo.write(elevationAngles[el]);
+      delay(1500); // Wait for servo to reach position
+      
+      int avg = readLDRs();
+      Serial.print("Azimuth: ");
+      Serial.print(az);
+      Serial.print(" Elevation: ");
+      Serial.print(elevationAngles[el]);
+      Serial.print(" Intensity: ");
+      Serial.println(avg);
+      
+      // Track best for this azimuth (lowest value)
+      if(avg < currentMinIntensity) {
+        currentMinIntensity = avg;
+        currentBestElevation = elevationAngles[el];
+      }
+      
+      // Track global best (lowest value)
+      if(avg < globalMinIntensity) {
+        globalMinIntensity = avg;
+        bestOverallAzimuth = az;
+        bestOverallElevation = elevationAngles[el];
+      }
+    }
+    
+    minElevations[az] = currentBestElevation;
+    minIntensities[az] = currentMinIntensity;
+    
+    // Rotate to next azimuth position (except after last position)
+    if(az < numAzimuthPositions - 1) {
+      rotate(x);
+    }
+  }
+}
+
+int readLDRs() {
+  int sum = 0;
+  for(int i=0; i<5; i++) {
+    sum += analogRead(ldrPins[i]);
+  }
+  return sum / 5; // Return average intensity
+}
+
+void rotate(int delayTime) {
+  // Rotate clockwise (adjust based on your wiring)
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, HIGH);
+  digitalWrite(in4, LOW);
+  
+  delay(delayTime); // Rotate for specified time
+  
+  // Stop motors
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+  
+  currentAzimuth = (currentAzimuth + 1) % numAzimuthPositions;
+  delay(500); // Brief pause after rotation
+}
+
+void printCalibrationData() {
+  Serial.println("\nCalibration Results:");
+  for(int i=0; i<numAzimuthPositions; i++) {
+    Serial.print("Azimuth ");
+    Serial.print(i);
+    Serial.print(": Best Elevation = ");
+    Serial.print(minElevations[i]);
+    Serial.print(" (Intensity: ");
+    Serial.print(minIntensities[i]);
+    Serial.println(")");
+  }
+  
+  Serial.println("\nOptimal Sun Position Found:");
+  Serial.print("Azimuth: ");
+  Serial.print(bestOverallAzimuth);
+  Serial.print(" (");
+  Serial.print(bestOverallAzimuth * 72);
+  Serial.print("°)");
+  Serial.print(", Elevation: ");
+  Serial.print(bestOverallElevation);
+  Serial.print("° (Intensity: ");
+  Serial.print(globalMinIntensity);
+  Serial.println(")");
+}
+
+void moveToOptimalPosition() {
+  Serial.println("\nMoving to optimal position...");
+  
+  // Calculate shortest rotation path
+  int targetAzimuth = bestOverallAzimuth;
+  int stepsForward = (targetAzimuth - currentAzimuth + numAzimuthPositions) % numAzimuthPositions;
+  int stepsBackward = (currentAzimuth - targetAzimuth + numAzimuthPositions) % numAzimuthPositions;
+
+  // Rotate in optimal direction
+  if(stepsForward <= stepsBackward) {
+    while(currentAzimuth != targetAzimuth) {
+      rotate(x);
+    }
+  } else {
+    while(currentAzimuth != targetAzimuth) {
+      rotateCCW(x);
+    }
+  }
+  
+  // Move to best elevation
+  elevationServo.write(bestOverallElevation);
+  delay(1500);
+  
+  Serial.println("Now at optimal position!");
+  Serial.print("Current Azimuth: ");
+  Serial.print(currentAzimuth);
+  Serial.print(", Elevation: ");
+  Serial.println(bestOverallElevation);
+}
+
+// Add counter-clockwise rotation function
+void rotateCCW(int delayTime) {
+  // Rotate counter-clockwise (adjust based on your wiring)
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, HIGH);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, HIGH);
+  
+  delay(delayTime);
+  
+  // Stop motors
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+  
+  currentAzimuth = (currentAzimuth - 1 + numAzimuthPositions) % numAzimuthPositions;
+  delay(500);
+}
